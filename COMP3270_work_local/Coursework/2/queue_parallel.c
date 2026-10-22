@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include <omh.h>
+#include <omp.h>
 
 /* Uniformly distributed random numbers in the range (0, 1). */
 static double rand_uniform_open01(void) {
@@ -31,9 +31,21 @@ void simulateQueue(double T, double lambda_arrival, double mu_service, double C,
   double start = 0.0;
   double end = 0.0;
 
+  int threadid, i;
+
   start = omp_get_wtime();
 
-  for (int r = 0; r < runs; r++) {
+
+#pragma omp parallel private(threadid)
+  { //fork
+    threadid = omp_get_thread_num();
+
+#pragma omp for // assign equal amount on indices to threads
+    default(shared);
+    private(i);
+    reduction(+:Q);
+
+    for (int i = 0; i < runs; i++) {
 
     /* Allocate and initialise storage for Q, N timesteps. */
     double *Q = (double *)calloc((size_t)N, sizeof(double));
@@ -53,6 +65,9 @@ void simulateQueue(double T, double lambda_arrival, double mu_service, double C,
         Q[t + 1] = 0.0;
       }
     }
+
+    }
+  } // join
 
     end = omp_get_wtime();
 
