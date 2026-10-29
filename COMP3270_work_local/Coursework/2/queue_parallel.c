@@ -33,21 +33,21 @@ void simulateQueue(double T, double lambda_arrival, double mu_service, double C,
 
   int aloc_failed = 0;
   int threadid;
+  int threads = omp_get_max_threads();
 
   start = omp_get_wtime();
 
 
-#pragma omp parallel private(threadid)
-  { //fork
-    threadid = omp_get_thread_num();
-
 #pragma omp parallel for \
   default(shared) \
+  schedule(static) \
   reduction(+:Qsum) \
   reduction(+:Qdev) \
 
   for (int r = 0; r < runs; r++) {
 
+    int threadid = omp_get_thread_num();
+    
     /* Each run seeded with time, thread number times a large prime plus the run index */
     unsigned int seed = (unsigned int)(time(NULL) ^ (omp_get_thread_num() * 7919 + r));
 
@@ -92,9 +92,9 @@ void simulateQueue(double T, double lambda_arrival, double mu_service, double C,
   Qdev += sqrt(var);
 
   free(Q);
-  //printf("Thread id %d working.\n", threadid);
+  printf("Thread id: %d working on run %d.\n", threadid, r);
   }
-  } // join
+
 
   end = omp_get_wtime();
   
@@ -103,8 +103,6 @@ void simulateQueue(double T, double lambda_arrival, double mu_service, double C,
     fprintf(stderr, "Memory allocation failed.\n");
     return;
   }
-
-  int threads = omp_get_max_threads();
 
   FILE *fp = fopen("queue_parallel_benchmark_results.txt", "a+");
   if (fp == NULL) {
@@ -143,7 +141,7 @@ int main(int argc, char *argv[]) {
   /* Set up random number generator seed */
   srand((unsigned int)time(NULL));
 
-  simulateQueue(120.0, 400.0 / 120.0, 0.2, 32.0, runs);
+  simulateQueue(1200.0, 400.0 / 120.0, 0.2, 32.0, runs);
 
   return 0;
 }
