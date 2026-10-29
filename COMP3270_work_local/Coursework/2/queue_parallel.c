@@ -5,16 +5,16 @@
 #include <omp.h>
 
 /* Uniformly distributed random numbers in the range (0, 1). */
-static double rand_uniform_open01(void) {
-  return ((double)rand() + 1.0) / ((double)RAND_MAX + 2.0);
+static double rand_uniform_open01(unsigned int *state) {
+  return ((double)rand_r(state) + 1.0) / ((double)RAND_MAX + 2.0);
 }
 
 /* Normal distribution random numbers */
-static double rand_normal_standard(void) {
+static double rand_normal_standard(unsigned int *state) {
   /* Box-Muller transform */
   const double PI = 3.14159265358979323846;
-  double u1 = rand_uniform_open01();
-  double u2 = rand_uniform_open01();
+  double u1 = rand_uniform_open01(state);
+  double u2 = rand_uniform_open01(state);
   return sqrt(-2.0 * log(u1)) * cos(2.0 * PI * u2);
 }
 
@@ -31,7 +31,8 @@ void simulateQueue(double T, double lambda_arrival, double mu_service, double C,
   double start = 0.0;
   double end = 0.0;
 
-  int threadid, i;
+  int aloc_failed = 0;
+  int threadid;
 
   start = omp_get_wtime();
 
@@ -40,57 +41,85 @@ void simulateQueue(double T, double lambda_arrival, double mu_service, double C,
   { //fork
     threadid = omp_get_thread_num();
 
-#pragma omp for // assign equal amount on indices to threads
-    default(shared);
-    private(i);
-    reduction(+:Q);
+#pragma omp parallel for \
+  default(shared) \
+  reduction(+:Qsum) \
+  reduction(+:Qdev) \
 
-    for (int i = 0; i < runs; i++) {
+  for (int r = 0; r < runs; r++) {
+
+    /* Each run seeded with time, thread number times a large prime plus the run index */
+    unsigned int seed = (unsigned int)(time(NULL) ^ (omp_get_thread_num() * 7919 + r));
 
     /* Allocate and initialise storage for Q, N timesteps. */
     double *Q = (double *)calloc((size_t)N, sizeof(double));
+
     if (Q == NULL) {
-      fprintf(stderr, "Memory allocation failed.\n");
-      return;
+      #pragma omp atomic write
+      aloc_failed = 1;
+      continue;
     }
 
-    /* Update the model for N timesteps. */
-    for (int t = 0; t < N - 1; t++) {
-      double q_min_c = (Q[t] < C) ? Q[t] : C;
-      double drift = lambda_arrival - mu_service * q_min_c;
-      double diffusion = sigma * sqrt(dt) * rand_normal_standard();
+  /* Update the model for N timesteps. */
+  for (int t = 0; t < N - 1; t++) {
+    double q_min_c = (Q[t] < C) ? Q[t] : C;
+    double drift = lambda_arrival - mu_service * q_min_c;
+    double diffusion = sigma * sqrt(dt) * rand_normal_standard(&seed);
 
-      Q[t + 1] = Q[t] + drift * dt + diffusion;
-      if (Q[t + 1] < 0.0) {
-        Q[t + 1] = 0.0;
-      }
+    Q[t + 1] = Q[t] + drift * dt + diffusion;
+    if (Q[t + 1] < 0.0) {
+      Q[t + 1] = 0.0;
     }
+  }
 
-    }
+
+  double mean = 0.0;
+  for (int i = 0; i < N; i++) {
+    mean += Q[i];
+  }
+  mean /= (double)N;
+
+  /* Population variance. */
+  double var = 0.0;
+  for (int i = 0; i < N; i++) {
+    double d = Q[i] - mean;
+    var += d * d;
+  }
+  var /= (double)N;
+
+  /* Compute sums of means and standard deviations. */
+  Qsum += mean;
+  Qdev += sqrt(var);
+
+  free(Q);
+  //printf("Thread id %d working.\n", threadid);
+  }
   } // join
 
-    end = omp_get_wtime();
+  end = omp_get_wtime();
+  
 
-    double mean = 0.0;
-    for (int i = 0; i < N; i++) {
-      mean += Q[i];
-    }
-    mean /= (double)N;
-
-    /* Population variance. */
-    double var = 0.0;
-    for (int i = 0; i < N; i++) {
-      double d = Q[i] - mean;
-      var += d * d;
-    }
-    var /= (double)N;
-
-    /* Compute sums of means and standard deviations. */
-    Qsum += mean;
-    Qdev += sqrt(var);
-
-    free(Q);
+  if (aloc_failed == 1) {
+    fprintf(stderr, "Memory allocation failed.\n");
+    return;
   }
+
+  int threads = omp_get_max_threads();
+
+  FILE *fp = fopen("queue_parallel_benchmark_results.txt", "a+");
+  if (fp == NULL) {
+    perror("Error opening file");
+  return;
+  }
+
+    // Check if empty
+  fseek(fp, 0, SEEK_END);
+  long size = ftell(fp);
+
+  if (size == 0) {
+    fprintf(fp, "Threads Runtime\n");
+  }
+  fprintf(fp, "%d %f\n", threads, (end-start));
 
   printf("Queue statistics over %d runs\n", runs);
   printf("-------------------------------\n");
