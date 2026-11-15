@@ -1,9 +1,11 @@
 CC = gcc
+MPICC = mpicc
 CFLAGS = -O2 -Wall
 LDFLAGS = -lm
 
-jacobi_solve: jacobi_solve.c system_gen.c system_gen.h
-	$(CC) $(CFLAGS) -o $@ jacobi_solve.c system_gen.c $(LDFLAGS)
+export OMPI_CC = $(CC)
 
-clean:
-	rm -f jacobi_solve
+jacobi_mpi: jacobi_mpi.c system_gen.c system_gen.h 
+	$(MPICC) $(CFLAGS) -o $@ jacobi_mpi.c system_gen.c $(LDFLAGS)
+clean: 
+	rm -f jacobi_mpi
