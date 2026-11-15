@@ -3,6 +3,7 @@
 #include <math.h>
 #include <time.h>
 #include "./system_gen.h"
+#include <mpi.h>
 
 /*
   Computes a 2-norm of a vector v.
@@ -104,8 +105,20 @@ int main(int argc, char *argv[]) {
 
   double t0 = clock();
 
+  //Attempting to use MPI_scatterv
+  int rank, size, i;
+  MPI_Init(&argc, &argv);
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+  int root = 0;
+  if (rank == root) {
+    generate_system(A, b, n, 0, margin);
+  }
+
+  MPI_Scatterv(A, 1, MPI_INT, b, 1, MPI_INT, root, MPI_COMM_WORLD);
   // Generate a linear system with diagonally dominant matrix A.
-  generate_system(A, b, n, 0, margin);
+  //generate_system(A, b, n, 0, margin);
 
   double tolerance = 1e-10;
   int max_iter = 500;
