@@ -6,7 +6,7 @@
 #include <mpi.h>
 
 /*
-  Computes a 2-norm of a vector v.
+  Computes a sum of a vector v.
 */
 static double vector_sum(double *v, int n) {
 
@@ -18,14 +18,14 @@ static double vector_sum(double *v, int n) {
 }
 
 /*
-  Computes a 2-norm of Ax-b.
+  Computes a 2-norm of Ax-b. Uses MPI_Allreduce to combine every processes sum_local.
 */
 static double residual_norm(double *A_local, double *x, double *b_local, int n, int n_local) {
 
   double sum_local = 0.0;
 
   for (int i = 0; i < n_local; i++) {
-    double Ax_i = 0.0;
+    double Ax_i = 0.0; //The dot product of row i. Allows parallising.
 
     for (int j = 0; j < n; j++)
       Ax_i += A_local[i*n + j] * x[j];
@@ -44,29 +44,38 @@ static double residual_norm(double *A_local, double *x, double *b_local, int n, 
   Solves Ax=b via the Jacobi method with an initial solution in x.
 
   Inputs
-    Max_iter: maximum number of Jacobi iterations to try.
-    tolerance: relative residual error used to declare convergence.
+    A_local: Each processes section of A
+    b_local: Each processes entries of b. Corressponding to A_local.
     x: the initial solution vector of size n.
+    n: the size of the whole system
+    n_local: the number of rows the current processes owns
+    row_start: index of the processes's first row
+    revcounts: array holding the number of entries each process owns
+    displs: array that holds the index of orders for each processes section 
+    max_iter: maximum number of Jacobi iterations to try.
+    tolerance: relative residual error used to declare convergence.
 
   Output:
     x: the solution to Ax=b.
 */
 static double *jacobi(double *A_local, double *b_local, double *x,
                       int n, int n_local, int row_start, 
-                      int *revcounts, int *displs, int max_iter, double tolerance, int rank) {
+                      int *revcounts, int *displs, int max_iter,
+                      double tolerance, int rank) {
 
-  double *x_new = calloc(n, sizeof(double));
-  double *x_new_local = calloc(n_local, sizeof(double));
+  double *x_new = calloc(n, sizeof(double)); //For new solution
+  double *x_new_local = calloc(n_local, sizeof(double)); //For each processes own result
 
+  //Calculating the norm. Now outside vector_norm as been replaced by vector_sum so that we can MPI_Allreduce
   double b_sumsq_local = vector_sum(b_local, n_local);
   double b_sumsq_global = 0.0;
   MPI_Allreduce(&b_sumsq_local, &b_sumsq_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-  double b_norm = sqrt(b_sumsq_global);
+  double b_norm = sqrt(b_sumsq_global); //Same for every process.
 
-  int iter;
-  for (iter = 0; iter < max_iter; iter++) {
+  int k;
+  for (k = 0; k < max_iter; k++) {
     for (int i = 0; i < n_local; i++) {
-      int i_global = row_start + i;
+      int i_global = row_start + i; //row in the solution matrix
       double sigma = 0.0;
       for (int j = 0; j < n; j++)
         if (j != i_global)
@@ -74,8 +83,12 @@ static double *jacobi(double *A_local, double *b_local, double *x,
       x_new_local[i] = (b_local[i] - sigma) / A_local[i*n + i_global];
     }
 
+    //Combines each process individual x (x_new_local) into the solution x (x_new).
+    //revcounts = how many entries each process sends
+    //displs = order of each process piece
     MPI_Allgatherv(x_new_local, n_local, MPI_DOUBLE, x_new, revcounts, displs, MPI_DOUBLE, MPI_COMM_WORLD);
 
+    //swap round where x points to. x_new point to old buffer so info can be lost.
     double *tmp = x;
     x = x_new;
     x_new = tmp;
@@ -91,16 +104,18 @@ static double *jacobi(double *A_local, double *b_local, double *x,
     }
   }
 
+  //Memory
   free(x_new);
   free(x_new_local);
-  if (iter == max_iter && rank == 0) {
-    printf("Solver did not converge in %d iterations. \n",
-           max_iter);
+
+  if (k == max_iter && rank == 0) {
+    printf("Solver did not converge in %d iterations. \n", max_iter);
   }
   return x;
 }
 
 int main(int argc, char *argv[]) {
+  //Intitialise MPI
   MPI_Init(&argc, &argv);
 
   int rank, size;
@@ -120,6 +135,7 @@ int main(int argc, char *argv[]) {
   int n = atoi(argv[1]);
   double margin = atof(argv[2]);
 
+  //Splitting rows between processes
   int base = n/ size;
   int extra = n % size;
   //Work distribution
@@ -128,6 +144,7 @@ int main(int argc, char *argv[]) {
   int *A_counts = malloc(size *sizeof(int)); // elements of A per process
   int *A_displs = malloc(size * sizeof(int)); //offset into A per process
 
+  //Filling Arrarys
   int offset = 0;
   for (int p = 0; p < size; p++) {
     row_counts[p] = base + (p < extra ? 1 : 0);
@@ -137,6 +154,7 @@ int main(int argc, char *argv[]) {
     offset += row_counts[p];
   }
 
+  //Variables for each process
   int n_local = row_counts[rank];
   int row_start = row_displs[rank];
 
@@ -151,26 +169,30 @@ int main(int argc, char *argv[]) {
   if (rank == root) {
     A = calloc((size_t) n * n, sizeof(double));
     b = calloc(n, sizeof(double));
+    //Memory allocation in root check
     if (!A || !b || !x) {
     fprintf(stderr, "Memory allocation for A, b, or x has failed. \n");
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
   }
 
+  //Memory allocation per process check
   if (!A_local || !b_local || !x) {
     fprintf(stderr, "Memory allocation for A, b, or x has failed. \n");
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
+  //Start processes
   MPI_Barrier(MPI_COMM_WORLD);
   double t0 = MPI_Wtime();
 
-  // Generate a linear system with diagonally dominant matrix A.
+  // Generate a linear system with diagonally dominant matrix A. Root creates system.
   //generate_system(A, b, n, 0, margin);
   if (rank == root) {
     generate_system(A, b, n, 0, margin);
   }
 
+  //Send each process its section of code.
   MPI_Scatterv(A, A_counts, A_displs, MPI_DOUBLE, A_local, n_local * n, MPI_DOUBLE, root, MPI_COMM_WORLD);
   MPI_Scatterv(b, row_counts, row_displs, MPI_DOUBLE, b_local, n_local, MPI_DOUBLE, root, MPI_COMM_WORLD);
 
@@ -185,6 +207,7 @@ int main(int argc, char *argv[]) {
     printf("Total run time:     %f seconds\n", runTime);
   }
 
+  //Memory
   free(A_local);
   free(b_local);
   free(x);
@@ -197,6 +220,7 @@ int main(int argc, char *argv[]) {
     free(b);
   }
 
+  //Close MPI
   MPI_Finalize();
   return 0;
 }
