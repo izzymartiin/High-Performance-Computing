@@ -98,7 +98,7 @@ static double *jacobi(double *A_local, double *b_local, double *x,
     if (accuracy / b_norm < tolerance) {
       if (rank == 0) {
         printf("Solved with error %e in %d iterations. \n",
-             accuracy / b_norm, iter);
+             accuracy / b_norm, k);
       }
      break;
     }
